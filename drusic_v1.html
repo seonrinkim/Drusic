@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <title>Drusic — Drawing turns into music</title>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+        touch-action: none;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        position: fixed;
+        background: #fff;
+      }
+
+      #toolbar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 60px;
+        background: #f5f5f5;
+        border-bottom: 2px solid #ddd;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        z-index: 1000;
+        touch-action: auto;
+      }
+      #toolbar-left {
+        display: flex;
+        gap: 12px;
+      }
+
+      .tool-btn {
+        padding: 10px 20px;
+        border: 2px solid #333;
+        background: white;
+        border-radius: 8px;
+        font-size: 18px;
+        cursor: pointer;
+        transition: all 0.1s;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .tool-btn:active {
+        transform: scale(0.95);
+        background: #e0e0e0;
+      }
+      .tool-btn.active {
+        background: #333;
+        color: white;
+      }
+      .tool-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      #timer {
+        font-size: 22px;
+        font-weight: bold;
+        color: #333;
+        min-width: 70px;
+        text-align: right;
+      }
+      #timer.warning {
+        color: #d32f2f;
+      }
+
+      #result-page {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: white;
+        z-index: 2000;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        touch-action: auto;
+      }
+      #result-page.show {
+        display: flex;
+      }
+      #result-title {
+        font-size: 28px;
+        font-weight: bold;
+        margin-bottom: 30px;
+      }
+
+      #replay-canvas-container {
+        border: 2px solid #ccc;
+        border-radius: 8px;
+        margin-bottom: 30px;
+        background: white;
+        max-width: 90vw;
+        max-height: 60vh;
+      }
+      #replay-canvas-container canvas {
+        display: block;
+        border-radius: 6px;
+        max-width: 100%;
+        max-height: 100%;
+      }
+
+      #result-controls {
+        display: flex;
+        gap: 20px;
+      }
+      #result-status {
+        margin-top: 20px;
+        font-size: 18px;
+        color: #666;
+      }
+      #drawing-area {
+        position: fixed;
+        top: 60px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        touch-action: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <div id="toolbar-left">
+        <button class="tool-btn active" id="pen-btn">✒️ Pen</button>
+        <button class="tool-btn" id="eraser-btn">🩹 Eraser</button>
+        <button class="tool-btn" id="clear-btn">🧹 Clear</button>
+        <button class="tool-btn" id="submit-btn">🚀 Submit</button>
+      </div>
+      <div id="timer">3:00</div>
+    </div>
+
+    <div id="drawing-area"></div>
+
+    <div id="result-page">
+      <div id="result-title">You've drawn a music!</div>
+      <div id="replay-canvas-container"></div>
+      <div id="result-controls">
+        <button class="tool-btn" id="back-btn">← Back</button>
+        <button class="tool-btn" id="play-btn">▶ Play</button>
+      </div>
+      <div id="result-status"></div>
+    </div>
+
+    <script>
+      // ========== 전역 상태 ==========
+      let currentTool = "pen",
+        isDrawing = false,
+        isReplaying = false,
+        isPlaying = false;
+      let drawingStartTime = null,
+        timerInterval = null,
+        remainingTime = 180;
+      let drawingEvents = [],
+        lastMoveTime = 0;
+      let sampler = null,
+        panner = null,
+        audioInitialized = false;
+      let myCanvas,
+        replayP5 = null,
+        playbackTimeout = null;
+      const MOVE_THROTTLE = 25,
+        CANVAS_OFFSET = 60;
+
+      // 원본 캔버스 비율 저장
+      let originalCanvasWidth = 0;
+      let originalCanvasHeight = 0;
+
+      // ========== p5 메인 스케치 ==========
+      function setup() {
+        const w = windowWidth;
+        const h = windowHeight - CANVAS_OFFSET;
+
+        myCanvas = createCanvas(w, h);
+        myCanvas.parent("drawing-area");
+        background(255);
+
+        // 캔버스 비율 저장
+        originalCanvasWidth = w;
+        originalCanvasHeight = h;
+
+        const c = myCanvas.elt;
+        c.addEventListener("touchstart", handleTouchStart, { passive: false });
+        c.addEventListener("touchmove", handleTouchMove, { passive: false });
+        c.addEventListener("touchend", handleTouchEnd, { passive: false });
+        c.addEventListener("mousedown", handleMouseDown);
+        c.addEventListener("mousemove", handleMouseMove);
+        c.addEventListener("mouseup", handleMouseUp);
+        c.addEventListener("mouseleave", handleMouseUp);
+        c.style.touchAction = "none";
+      }
+
+      function draw() {}
+
+      function windowResized() {
+        resizeCanvas(windowWidth, windowHeight - CANVAS_OFFSET);
+      }
+
+      // ========== 리플레이 스케치 (원본 비율 유지) ==========
+      const createReplaySketch = (canvasWidth, canvasHeight) => (p) => {
+        let events = [],
+          startTime = 0,
+          index = 0,
+          lastX = 0,
+          lastY = 0,
+          active = false;
+
+        p.setup = () => {
+          // 원본 비율 그대로 캔버스 생성
+          p.createCanvas(canvasWidth, canvasHeight);
+          p.pixelDensity(2);
+          p.background(255);
+        };
+
+        p.draw = () => {
+          if (!active || !events.length) return;
+
+          const elapsed = Date.now() - startTime;
+          while (index < events.length && events[index].t <= elapsed) {
+            const e = events[index];
+            if (e.type === "down") {
+              lastX = e.x;
+              lastY = e.y;
+              // 도구에 따라 색상 설정
+              if (e.tool === "eraser") {
+                p.stroke(255);
+                p.strokeWeight(20);
+              } else {
+                p.stroke(0);
+                p.strokeWeight(2.5);
+              }
+              p.strokeCap(p.ROUND);
+              p.point(e.x, e.y);
+            } else if (e.type === "move") {
+              // 도구에 따라 색상 설정
+              if (e.tool === "eraser") {
+                p.stroke(255);
+                p.strokeWeight(20);
+              } else {
+                p.stroke(0);
+                p.strokeWeight(2.5);
+              }
+              p.strokeCap(p.ROUND);
+              p.strokeJoin(p.ROUND);
+              p.line(lastX, lastY, e.x, e.y);
+              lastX = e.x;
+              lastY = e.y;
+            }
+            index++;
+          }
+          if (index >= events.length) active = false;
+        };
+
+        p.startReplay = (e) => {
+          events = e;
+          startTime = Date.now();
+          index = 0;
+          active = true;
+          p.background(255);
+        };
+        p.stopReplay = () => {
+          active = false;
+          index = 0;
+          p.background(255);
+        };
+      };
+
+      // ========== 입력 핸들러 ==========
+      let lastX = 0,
+        lastY = 0,
+        isPencilDrawing = false,
+        isMouseDrawing = false;
+
+      function handleTouchStart(e) {
+        if (isReplaying) return;
+        e.preventDefault();
+
+        let touch = null;
+        for (let t of e.touches)
+          if (t.force > 0) {
+            touch = t;
+            break;
+          }
+        if (!touch && e.touches.length > 1) return;
+        if (
+          !touch &&
+          e.touches.length === 1 &&
+          (e.touches[0].force === 0 || !e.touches[0].force)
+        )
+          return;
+        if (!touch) touch = e.touches[0];
+
+        const rect = myCanvas.elt.getBoundingClientRect();
+        lastX = touch.clientX - rect.left;
+        lastY = touch.clientY - rect.top;
+        isPencilDrawing = true;
+        startDraw(lastX, lastY);
+      }
+
+      function handleTouchMove(e) {
+        if (isReplaying || !isPencilDrawing) return;
+        e.preventDefault();
+
+        let touch = null;
+        for (let t of e.touches)
+          if (t.force > 0) {
+            touch = t;
+            break;
+          }
+        if (!touch && e.touches.length > 1) return;
+        if (
+          !touch &&
+          e.touches.length === 1 &&
+          (e.touches[0].force === 0 || !e.touches[0].force)
+        )
+          return;
+        if (!touch) touch = e.touches[0];
+
+        const rect = myCanvas.elt.getBoundingClientRect();
+        moveDraw(touch.clientX - rect.left, touch.clientY - rect.top);
+      }
+
+      function handleTouchEnd(e) {
+        if (isReplaying || !isPencilDrawing) return;
+        e.preventDefault();
+        isPencilDrawing = false;
+
+        const rect = myCanvas.elt.getBoundingClientRect();
+        let x = lastX,
+          y = lastY;
+        if (e.changedTouches.length > 0) {
+          x = e.changedTouches[0].clientX - rect.left;
+          y = e.changedTouches[0].clientY - rect.top;
+        }
+        endDraw(x, y);
+      }
+
+      function handleMouseDown(e) {
+        if (isReplaying) return;
+        const rect = myCanvas.elt.getBoundingClientRect();
+        lastX = e.clientX - rect.left;
+        lastY = e.clientY - rect.top;
+        isMouseDrawing = true;
+        startDraw(lastX, lastY);
+      }
+
+      function handleMouseMove(e) {
+        if (isReplaying || !isMouseDrawing) return;
+        const rect = myCanvas.elt.getBoundingClientRect();
+        moveDraw(e.clientX - rect.left, e.clientY - rect.top);
+      }
+
+      function handleMouseUp(e) {
+        if (isReplaying || !isMouseDrawing) return;
+        isMouseDrawing = false;
+        const rect = myCanvas.elt.getBoundingClientRect();
+        endDraw(e.clientX - rect.left, e.clientY - rect.top);
+      }
+
+      // ========== 드로잉 로직 ==========
+      function startDraw(x, y) {
+        isDrawing = true;
+        if (!drawingStartTime) {
+          drawingStartTime = Date.now();
+          startTimer();
+        }
+
+        const now = Date.now();
+        drawingEvents.push({ t: now, x, y, type: "down", tool: currentTool });
+        lastMoveTime = now;
+        lastX = x;
+        lastY = y;
+
+        if (currentTool === "pen") {
+          stroke(0);
+          strokeWeight(2.5);
+          strokeCap(ROUND);
+          point(x, y);
+        }
+      }
+
+      function moveDraw(x, y) {
+        if (!isDrawing) return;
+        const now = Date.now();
+        if (now - lastMoveTime >= MOVE_THROTTLE) {
+          drawingEvents.push({ t: now, x, y, type: "move", tool: currentTool });
+          lastMoveTime = now;
+        }
+
+        if (currentTool === "pen") {
+          stroke(0);
+          strokeWeight(2.5);
+          strokeCap(ROUND);
+          strokeJoin(ROUND);
+          line(lastX, lastY, x, y);
+        } else if (currentTool === "eraser") {
+          stroke(255);
+          strokeWeight(20);
+          strokeCap(ROUND);
+          line(lastX, lastY, x, y);
+        }
+        lastX = x;
+        lastY = y;
+      }
+
+      function endDraw(x, y) {
+        if (!isDrawing) return;
+        isDrawing = false;
+        drawingEvents.push({ t: Date.now(), x, y, type: "up", tool: currentTool });
+      }
+
+      // ========== 타이머 ==========
+      function startTimer() {
+        updateTimer();
+        timerInterval = setInterval(() => {
+          remainingTime--;
+          updateTimer();
+          if (remainingTime <= 30)
+            document.getElementById("timer").classList.add("warning");
+          if (remainingTime <= 0) {
+            clearInterval(timerInterval);
+            handleSubmit();
+          }
+        }, 1000);
+      }
+
+      function updateTimer() {
+        const m = Math.floor(remainingTime / 60),
+          s = remainingTime % 60;
+        document.getElementById("timer").textContent = `${m}:${s
+          .toString()
+          .padStart(2, "0")}`;
+      }
+
+      // ========== 버튼 설정 ==========
+      const setupBtn = (id, fn) => {
+        const btn = document.getElementById(id);
+        btn.addEventListener(
+          "touchend",
+          (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fn();
+          },
+          { passive: false }
+        );
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          fn();
+        });
+      };
+
+      setupBtn("pen-btn", () => {
+        if (isReplaying) return;
+        currentTool = "pen";
+        updateToolBtns();
+      });
+      setupBtn("eraser-btn", () => {
+        if (isReplaying) return;
+        currentTool = "eraser";
+        updateToolBtns();
+      });
+      setupBtn("clear-btn", () => {
+        if (isReplaying) return;
+        background(255);
+        drawingEvents = [];
+        drawingStartTime = null;
+        remainingTime = 180;
+        if (timerInterval) {
+          clearInterval(timerInterval);
+          timerInterval = null;
+        }
+        document.getElementById("timer").textContent = "3:00";
+        document.getElementById("timer").classList.remove("warning");
+      });
+      setupBtn("submit-btn", () => {
+        if (isReplaying) return;
+        handleSubmit();
+      });
+      setupBtn("back-btn", () => {
+        document.getElementById("result-page").classList.remove("show");
+        if (isPlaying) stopAudio();
+        if (replayP5?.stopReplay) replayP5.stopReplay();
+        isReplaying = false;
+      });
+      setupBtn("play-btn", handlePlay);
+
+      function updateToolBtns() {
+        document
+          .querySelectorAll("#toolbar-left .tool-btn")
+          .forEach((b) => b.classList.remove("active"));
+        document
+          .getElementById(currentTool === "pen" ? "pen-btn" : "eraser-btn")
+          .classList.add("active");
+      }
+
+      // ========== Submit ==========
+      async function handleSubmit() {
+        if (timerInterval) clearInterval(timerInterval);
+        if (!drawingEvents.length) {
+          alert("Draw something first!");
+          return;
+        }
+
+        // 리플레이 캔버스를 원본 비율로 생성
+        if (!replayP5) {
+          const container = document.getElementById("replay-canvas-container");
+
+          // 화면에 맞게 스케일 조정 (최대 90vw, 60vh)
+          const maxWidth = window.innerWidth * 0.9;
+          const maxHeight = window.innerHeight * 0.6;
+          const aspectRatio = originalCanvasWidth / originalCanvasHeight;
+
+          let displayWidth = originalCanvasWidth;
+          let displayHeight = originalCanvasHeight;
+
+          // 너무 크면 축소
+          if (displayWidth > maxWidth) {
+            displayWidth = maxWidth;
+            displayHeight = displayWidth / aspectRatio;
+          }
+          if (displayHeight > maxHeight) {
+            displayHeight = maxHeight;
+            displayWidth = displayHeight * aspectRatio;
+          }
+
+          // 리플레이 스케치 생성 (원본 해상도)
+          replayP5 = new p5(
+            createReplaySketch(originalCanvasWidth, originalCanvasHeight),
+            container
+          );
+
+          // CSS로 디스플레이 크기 조정
+          const canvas = container.querySelector("canvas");
+          if (canvas) {
+            canvas.style.width = displayWidth + "px";
+            canvas.style.height = displayHeight + "px";
+          }
+        }
+
+        document.getElementById("result-page").classList.add("show");
+        document.getElementById("result-status").textContent =
+          "Loading audio...";
+
+        if (!audioInitialized) await initAudio();
+        document.getElementById("result-status").textContent = "Ready";
+      }
+
+      // ========== 오디오 ==========
+      async function initAudio() {
+        try {
+          panner = new Tone.Panner(0).toDestination();
+          sampler = new Tone.Sampler({
+            urls: {
+              A0: "A0.mp3",
+              C1: "C1.mp3",
+              "D#1": "Ds1.mp3",
+              "F#1": "Fs1.mp3",
+              A1: "A1.mp3",
+              C2: "C2.mp3",
+              "D#2": "Ds2.mp3",
+              "F#2": "Fs2.mp3",
+              A2: "A2.mp3",
+              C3: "C3.mp3",
+              "D#3": "Ds3.mp3",
+              "F#3": "Fs3.mp3",
+              A3: "A3.mp3",
+              C4: "C4.mp3",
+              "D#4": "Ds4.mp3",
+              "F#4": "Fs4.mp3",
+              A4: "A4.mp3",
+              C5: "C5.mp3",
+              "D#5": "Ds5.mp3",
+              "F#5": "Fs5.mp3",
+              A5: "A5.mp3",
+              C6: "C6.mp3",
+              "D#6": "Ds6.mp3",
+              "F#6": "Fs6.mp3",
+              A6: "A6.mp3",
+              C7: "C7.mp3",
+              "D#7": "Ds7.mp3",
+              "F#7": "Fs7.mp3",
+              A7: "A7.mp3",
+              C8: "C8.mp3",
+            },
+            attack: 0.01,
+            release: 0.8,
+            baseUrl: "https://tonejs.github.io/audio/salamander/",
+          }).connect(panner);
+          await sampler.loaded;
+          audioInitialized = true;
+          console.log("✓ Audio loaded");
+        } catch (e) {
+          console.error("Audio error:", e);
+          document.getElementById("result-status").textContent = "Audio failed";
+        }
+      }
+
+      // ========== Play ==========
+      async function handlePlay() {
+        if (isPlaying || !audioInitialized) return;
+
+        stopAudio();
+        isPlaying = true;
+        isReplaying = true;
+        document.getElementById("play-btn").disabled = true;
+        document.getElementById("result-status").textContent = "Playing...";
+
+        try {
+          await Tone.start();
+          if (Tone.context.state !== "running") await Tone.context.resume();
+
+          // 리플레이 시작 (좌표 변환 없이 원본 그대로)
+          const replayEvents = prepareReplayEvents(drawingEvents);
+          if (replayP5?.startReplay) replayP5.startReplay(replayEvents);
+
+          // 오디오 재생
+          const timeline = createTimeline(drawingEvents);
+          if (!timeline.length) {
+            document.getElementById("result-status").textContent = "No notes";
+            isPlaying = false;
+            isReplaying = false;
+            document.getElementById("play-btn").disabled = false;
+            return;
+          }
+
+          const duration = await scheduleAndPlay(timeline);
+          playbackTimeout = setTimeout(() => {
+            document.getElementById("result-status").textContent = "Done";
+            isPlaying = false;
+            isReplaying = false;
+            document.getElementById("play-btn").disabled = false;
+            playbackTimeout = null;
+          }, (duration + 1) * 1000);
+        } catch (e) {
+          console.error("Playback error:", e);
+          document.getElementById("result-status").textContent = "Error";
+          isPlaying = false;
+          isReplaying = false;
+          document.getElementById("play-btn").disabled = false;
+        }
+      }
+
+      function prepareReplayEvents(events) {
+        if (!events.length) return [];
+        const first = events[0].t;
+
+        // 좌표 변환 없이 원본 그대로 사용, tool 정보도 전달
+        return events.map((e) => ({
+          t: e.t - first,
+          x: e.x,
+          y: e.y,
+          type: e.type,
+          tool: e.tool || "pen",
+        }));
+      }
+
+      function createTimeline(events) {
+        if (!events.length) return [];
+        const timeline = [],
+          first = events[0].t;
+        const h = originalCanvasHeight,
+          w = originalCanvasWidth;
+
+        const yToMidi = (y) =>
+          Math.max(
+            48,
+            Math.min(
+              84,
+              Math.round(48 + (1 - Math.max(0, Math.min(1, y / h))) * 36)
+            )
+          );
+        const xToPan = (x) =>
+          Math.max(-1, Math.min(1, Math.max(0, Math.min(1, x / w)) * 2 - 1));
+        const midiToNote = (m) => Tone.Frequency(m, "midi").toNote();
+
+        let i = 0;
+        while (i < events.length) {
+          if (events[i].type === "down") {
+            const start = events[i].t;
+            const strokeTool = events[i].tool || "pen";
+            let end = start,
+              stroke = [events[i]];
+
+            i++;
+            while (i < events.length && events[i].type !== "down") {
+              stroke.push(events[i]);
+              end = events[i].t;
+              if (events[i].type === "up") {
+                i++;
+                break;
+              }
+              i++;
+            }
+
+            // 지우개 스트로크는 쉼표로 처리 (음표 생성 안 함)
+            if (strokeTool === "eraser") {
+              const pauseDur = (end - start) / 1000;
+              if (pauseDur > 0.05) {
+                timeline.push({
+                  type: "pause",
+                  startTime: (start - first) / 1000,
+                  duration: pauseDur,
+                });
+              }
+              continue;
+            }
+
+            if (end - start < 30) continue;
+
+            const segs = stroke.map((s) => ({
+              time: s.t,
+              midi: yToMidi(s.y),
+              pan: xToPan(s.x),
+              note: midiToNote(yToMidi(s.y)),
+            }));
+
+            const merged = [];
+            let curr = null;
+
+            for (const seg of segs) {
+              if (!curr) {
+                curr = {
+                  start: seg.time,
+                  end: seg.time,
+                  midi: seg.midi,
+                  pan: seg.pan,
+                  note: seg.note,
+                  panSum: seg.pan,
+                  panCnt: 1,
+                };
+              } else {
+                const panDiff = Math.abs(seg.pan - curr.pan);
+                if (seg.midi === curr.midi && panDiff < 0.3) {
+                  curr.end = seg.time;
+                  curr.panSum += seg.pan;
+                  curr.panCnt++;
+                  curr.pan = curr.panSum / curr.panCnt;
+                } else {
+                  const dur = Math.max(0.15, (curr.end - curr.start) / 1000);
+                  merged.push({
+                    startTime: (curr.start - first) / 1000,
+                    duration: dur,
+                    note: curr.note,
+                    pan: curr.pan,
+                  });
+                  curr = {
+                    start: seg.time,
+                    end: seg.time,
+                    midi: seg.midi,
+                    pan: seg.pan,
+                    note: seg.note,
+                    panSum: seg.pan,
+                    panCnt: 1,
+                  };
+                }
+              }
+            }
+
+            if (curr) {
+              const dur = Math.max(0.15, (curr.end - curr.start) / 1000);
+              merged.push({
+                startTime: (curr.start - first) / 1000,
+                duration: dur,
+                note: curr.note,
+                pan: curr.pan,
+              });
+            }
+
+            merged.forEach((m) =>
+              timeline.push({
+                type: "note",
+                startTime: m.startTime,
+                duration: m.duration,
+                note: m.note,
+                pan: m.pan,
+              })
+            );
+
+            if (i < events.length && events[i].type === "down") {
+              const pauseDur = (events[i].t - end) / 1000;
+              if (pauseDur > 0.05) {
+                timeline.push({
+                  type: "pause",
+                  startTime: (end - first) / 1000,
+                  duration: pauseDur,
+                });
+              }
+            }
+          } else i++;
+        }
+
+        timeline.sort((a, b) => a.startTime - b.startTime);
+        return timeline;
+      }
+
+      async function scheduleAndPlay(timeline) {
+        const now = Tone.now();
+        let maxEnd = 0;
+
+        for (let i = 0; i < timeline.length; i++) {
+          const item = timeline[i];
+          if (item.type === "note") {
+            try {
+              const start = now + item.startTime;
+              let end = start + item.duration;
+
+              if (i < timeline.length - 1 && timeline[i + 1].type === "note") {
+                const gap =
+                  timeline[i + 1].startTime - (item.startTime + item.duration);
+                if (gap < 0.2) end = now + timeline[i + 1].startTime + 0.05;
+              }
+
+              if (!item.note || typeof item.note !== "string") continue;
+
+              panner.pan.setValueAtTime(item.pan, start);
+              sampler.triggerAttack(item.note, start);
+              sampler.triggerRelease(item.note, end);
+              maxEnd = Math.max(maxEnd, end - now);
+            } catch (e) {
+              console.error("Note error:", e);
+            }
+          } else if (item.type === "pause") {
+            maxEnd = Math.max(maxEnd, item.startTime + item.duration);
+          }
+        }
+        return maxEnd;
+      }
+
+      function stopAudio() {
+        if (sampler) sampler.releaseAll();
+        if (playbackTimeout) {
+          clearTimeout(playbackTimeout);
+          playbackTimeout = null;
+        }
+        isPlaying = false;
+        isReplaying = false;
+        document.getElementById("play-btn").disabled = false;
+        if (replayP5?.stopReplay) replayP5.stopReplay();
+      }
+    </script>
+  </body>
+</html>
