@@ -181,7 +181,7 @@
       let myCanvas,
         replayP5 = null,
         playbackTimeout = null;
-      const MOVE_THROTTLE = 25,
+      const MOVE_THROTTLE = 5,  // 25 → 5로 변경! 더 부드러움
         CANVAS_OFFSET = 60;
 
       // 원본 캔버스 비율 저장
