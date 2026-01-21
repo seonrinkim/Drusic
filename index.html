@@ -116,14 +116,10 @@
         border-radius: 8px;
         margin-bottom: 30px;
         background: white;
-        max-width: 90vw;
-        max-height: 60vh;
       }
       #replay-canvas-container canvas {
         display: block;
         border-radius: 6px;
-        max-width: 100%;
-        max-height: 100%;
       }
 
       #result-controls {
@@ -247,7 +243,6 @@
             if (e.type === "down") {
               lastX = e.x;
               lastY = e.y;
-              // 도구에 따라 색상 설정
               if (e.tool === "eraser") {
                 p.stroke(255);
                 p.strokeWeight(20);
@@ -258,7 +253,6 @@
               p.strokeCap(p.ROUND);
               p.point(e.x, e.y);
             } else if (e.type === "move") {
-              // 도구에 따라 색상 설정
               if (e.tool === "eraser") {
                 p.stroke(255);
                 p.strokeWeight(20);
@@ -432,7 +426,13 @@
       function endDraw(x, y) {
         if (!isDrawing) return;
         isDrawing = false;
-        drawingEvents.push({ t: Date.now(), x, y, type: "up", tool: currentTool });
+        drawingEvents.push({
+          t: Date.now(),
+          x,
+          y,
+          type: "up",
+          tool: currentTool,
+        });
       }
 
       // ========== 타이머 ==========
@@ -520,7 +520,7 @@
           .classList.add("active");
       }
 
-      // ========== Submit ==========
+      // ========== Submit (비율 완벽 유지) ==========
       async function handleSubmit() {
         if (timerInterval) clearInterval(timerInterval);
         if (!drawingEvents.length) {
@@ -528,35 +528,37 @@
           return;
         }
 
-        // 리플레이 캔버스를 원본 비율로 생성
         if (!replayP5) {
           const container = document.getElementById("replay-canvas-container");
 
-          // 화면에 맞게 스케일 조정 (최대 90vw, 60vh)
+          // 화면 여백 (최대 90vw, 60vh)
           const maxWidth = window.innerWidth * 0.9;
           const maxHeight = window.innerHeight * 0.6;
+          
+          // 원본 비율
           const aspectRatio = originalCanvasWidth / originalCanvasHeight;
 
-          let displayWidth = originalCanvasWidth;
-          let displayHeight = originalCanvasHeight;
-
-          // 너무 크면 축소
-          if (displayWidth > maxWidth) {
-            displayWidth = maxWidth;
+          // 비율 유지하면서 화면에 맞추기
+          let displayWidth, displayHeight;
+          
+          // 가로/세로 중 어느 쪽이 화면을 먼저 채우는지 확인
+          if (originalCanvasWidth / maxWidth > originalCanvasHeight / maxHeight) {
+            // 가로가 먼저 limit 도달 → 가로 기준으로 축소
+            displayWidth = Math.min(originalCanvasWidth, maxWidth);
             displayHeight = displayWidth / aspectRatio;
-          }
-          if (displayHeight > maxHeight) {
-            displayHeight = maxHeight;
+          } else {
+            // 세로가 먼저 limit 도달 → 세로 기준으로 축소
+            displayHeight = Math.min(originalCanvasHeight, maxHeight);
             displayWidth = displayHeight * aspectRatio;
           }
 
-          // 리플레이 스케치 생성 (원본 해상도)
+          // 리플레이 스케치 생성 (원본 해상도 그대로)
           replayP5 = new p5(
             createReplaySketch(originalCanvasWidth, originalCanvasHeight),
             container
           );
 
-          // CSS로 디스플레이 크기 조정
+          // CSS로 디스플레이 크기만 조정 (비율 완벽 유지)
           const canvas = container.querySelector("canvas");
           if (canvas) {
             canvas.style.width = displayWidth + "px";
@@ -636,11 +638,9 @@
           await Tone.start();
           if (Tone.context.state !== "running") await Tone.context.resume();
 
-          // 리플레이 시작 (좌표 변환 없이 원본 그대로)
           const replayEvents = prepareReplayEvents(drawingEvents);
           if (replayP5?.startReplay) replayP5.startReplay(replayEvents);
 
-          // 오디오 재생
           const timeline = createTimeline(drawingEvents);
           if (!timeline.length) {
             document.getElementById("result-status").textContent = "No notes";
@@ -671,7 +671,6 @@
         if (!events.length) return [];
         const first = events[0].t;
 
-        // 좌표 변환 없이 원본 그대로 사용, tool 정보도 전달
         return events.map((e) => ({
           t: e.t - first,
           x: e.x,
@@ -719,7 +718,6 @@
               i++;
             }
 
-            // 지우개 스트로크는 쉼표로 처리 (음표 생성 안 함)
             if (strokeTool === "eraser") {
               const pauseDur = (end - start) / 1000;
               if (pauseDur > 0.05) {
